@@ -25,7 +25,7 @@ class RedisConfig(BaseSettings):
 
 class Config(BaseSettings):
     app_name: str = "Testing"
-    debug: bool = False
+    debug: bool = True
 
     # JWT Configuration
     secret_key: str
