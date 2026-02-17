@@ -29,4 +29,7 @@ dependencies = [
     "torch>=2.10.0",
     "transformers>=5.1.0",
     "peft>=0.18.1",
+    "dacite>=1.9.2",
+    "omegaconf>=2.3.0",
+    "scipy>=1.17.0",
 ]
