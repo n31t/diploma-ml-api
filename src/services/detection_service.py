@@ -8,6 +8,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from src.core.config import BASE_DIR
 from src.core.logging import get_logger
 from src.dtos.detection_dto import DetectionInputDTO, DetectionResultDTO
+from src.utils.chunk_aggregator import aggregate_chunk_results
+from src.utils.text_chunker import split_text_into_chunks
 
 logger = get_logger(__name__)
 
@@ -53,8 +55,8 @@ class RuBertService:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._load_model_sync)
 
-    async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
-        """Run inference and return detection result."""
+    async def detect_chunk(self, dto: DetectionInputDTO) -> DetectionResultDTO:
+        """Run inference on a single chunk and return its result."""
         inputs = self._tokenizer(
             dto.text,
             return_tensors="pt",
@@ -79,6 +81,17 @@ class RuBertService:
             ai_spans=[],
             model_used="rubert",
         )
+
+    async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
+        """Detect AI-generated text with chunking for long inputs."""
+        chunks = split_text_into_chunks(dto.text)
+        logger.info("rubert_chunking", total_chunks=len(chunks))
+
+        chunk_results = [
+            await self.detect_chunk(DetectionInputDTO(text=chunk))
+            for chunk in chunks
+        ]
+        return aggregate_chunk_results(chunk_results, chunks)
 
 
 class GigaCheckService:
@@ -106,26 +119,24 @@ class GigaCheckService:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._load_model_sync)
 
-    async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
-        """Run inference and return detection result."""
+    async def detect_chunk(self, dto: DetectionInputDTO) -> DetectionResultDTO:
+        """Run inference on a single chunk and return its result."""
         text = dto.text.replace("\n", " ")
         output = await asyncio.get_event_loop().run_in_executor(
             None, lambda: self._model([text])
         )
         label_id = int(output.pred_label_ids[0])
         label = self._model.config.id2label[label_id]
-        
-        # Extract probabilities: probs[0] = AI, probs[1] = Human
+
         if hasattr(output, 'classification_head_probs') and output.classification_head_probs is not None:
             probs = output.classification_head_probs[0].detach().cpu().numpy()
             ai_probability = float(probs[0] * 100.0)  # Class 0 is AI probability
             certainty = float(probs[label_id] * 100.0)  # Confidence in predicted class
         else:
-            # Fallback if probabilities not available
             is_ai = label.lower() == "ai"
             ai_probability = 100.0 if is_ai else 0.0
             certainty = 100.0
-        
+
         return DetectionResultDTO(
             label=label,
             ai_probability=ai_probability,
@@ -133,6 +144,17 @@ class GigaCheckService:
             ai_spans=[],
             model_used="gigacheck",
         )
+
+    async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
+        """Detect AI-generated text with chunking for long inputs."""
+        chunks = split_text_into_chunks(dto.text)
+        logger.debug("gigacheck_chunking", total_chunks=len(chunks))
+
+        chunk_results = [
+            await self.detect_chunk(DetectionInputDTO(text=chunk))
+            for chunk in chunks
+        ]
+        return aggregate_chunk_results(chunk_results, chunks)
 
 
 class DetectionService:
