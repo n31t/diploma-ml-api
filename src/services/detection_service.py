@@ -136,21 +136,31 @@ class GigaCheckService:
 
 
 class DetectionService:
-    """AI text detection service using RuBERT and GigaCheck."""
+    """AI text detection: GigaCheck primary, RuBERT fallback."""
 
     def __init__(self, rubert: RuBertService, gigacheck: GigaCheckService) -> None:
         self._rubert = rubert
         self._gigacheck = gigacheck
+        self._gigacheck_available = False
 
     async def load(self) -> None:
-        """Load both models concurrently."""
-        await asyncio.gather(self._rubert.load(), self._gigacheck.load())
-        logger.info("models_loaded_successfully")
+        """Load both models, gracefully handling GigaCheck failures."""
+        await self._rubert.load()
+        logger.info("rubert_loaded_successfully")
+
+        try:
+            await self._gigacheck.load()
+            self._gigacheck_available = True
+            logger.info("gigacheck_loaded_successfully")
+        except Exception as e:
+            logger.warning("gigacheck_load_failed_using_rubert_only", error=str(e))
 
     async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
-        """Run inference with RuBERT."""
-        return await self._rubert.detect(dto)
+        """Try GigaCheck first; fall back to RuBERT on failure."""
+        if self._gigacheck_available:
+            try:
+                return await self._gigacheck.detect(dto)
+            except Exception as e:
+                logger.warning("gigacheck_inference_failed_falling_back_to_rubert", error=str(e))
 
-    async def detect_gigacheck(self, dto: DetectionInputDTO) -> DetectionResultDTO:
-        """Run inference with GigaCheck."""
-        return await self._gigacheck.detect(dto)
+        return await self._rubert.detect(dto)
