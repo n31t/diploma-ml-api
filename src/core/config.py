@@ -43,6 +43,7 @@ class Config(BaseSettings):
         extra='ignore', 
     )
 
-
+    # HuggingFace cache
+    hf_cache_dir: str | None = None
 
 config = Config()

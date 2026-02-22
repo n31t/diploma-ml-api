@@ -5,7 +5,7 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from src.core.config import BASE_DIR
+from src.core.config import BASE_DIR, config
 from src.core.logging import get_logger
 from src.dtos.detection_dto import DetectionInputDTO, DetectionResultDTO
 from src.utils.chunk_aggregator import aggregate_chunk_results
@@ -37,10 +37,11 @@ class RuBertService:
         self._model = None
 
     def _load_model_sync(self) -> None:
-        tokenizer = AutoTokenizer.from_pretrained(_RUBERT_BASE_MODEL)
+        tokenizer = AutoTokenizer.from_pretrained(_RUBERT_BASE_MODEL, cache_dir=config.hf_cache_dir)
         base_model = AutoModelForSequenceClassification.from_pretrained(
             _RUBERT_BASE_MODEL,
             num_labels=2,
+            cache_dir=config.hf_cache_dir
         )
         model = PeftModel.from_pretrained(base_model, _RUBERT_CHECKPOINT)
         model.config.id2label = _RUBERT_ID2LABEL
@@ -110,6 +111,7 @@ class GigaCheckService:
             trust_remote_code=True,
             device_map="cpu",
             dtype=dtype,
+            cache_dir=config.hf_cache_dir,
         )
         model.eval()
         self._model = model
