@@ -1,4 +1,4 @@
-"""AI text detection service using RuBERT."""
+"""AI text detection service using RuBERT and GigaCheck."""
 import asyncio
 
 import torch
@@ -14,6 +14,8 @@ logger = get_logger(__name__)
 _RUBERT_BASE_MODEL = "DeepPavlov/rubert-base-cased"
 _RUBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "rubert-base-ainl-peft" / "checkpoint-3072")
 _RUBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
+
+_GIGACHECK_MODEL = "iitolstykh/GigaCheck-Classifier-Multi"
 
 
 def _get_device() -> str:
@@ -79,17 +81,76 @@ class RuBertService:
         )
 
 
-class DetectionService:
-    """AI text detection service using RuBERT."""
+class GigaCheckService:
+    """GigaCheck-Classifier-Multi for binary AI text classification."""
 
-    def __init__(self, rubert: RuBertService) -> None:
-        self._rubert = rubert
+    def __init__(self) -> None:
+        self._device = _get_device()
+        self._model = None
+
+    def _load_model_sync(self) -> None:
+        from transformers import AutoModel  # noqa: PLC0415
+
+        dtype = torch.bfloat16 if self._device != "cpu" else torch.float32
+        model = AutoModel.from_pretrained(
+            _GIGACHECK_MODEL,
+            trust_remote_code=True,
+            device_map="cpu",
+            dtype=dtype,
+        )
+        model.eval()
+        self._model = model
 
     async def load(self) -> None:
-        """Load the RuBERT model."""
-        await self._rubert.load()
-        logger.info("rubert_loaded_successfully")
+        """Load model in a thread pool so the event loop is not blocked."""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._load_model_sync)
 
     async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
         """Run inference and return detection result."""
+        text = dto.text.replace("\n", " ")
+        output = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._model([text])
+        )
+        label_id = int(output.pred_label_ids[0])
+        label = self._model.config.id2label[label_id]
+        
+        # Extract probabilities: probs[0] = AI, probs[1] = Human
+        if hasattr(output, 'classification_head_probs') and output.classification_head_probs is not None:
+            probs = output.classification_head_probs[0].detach().cpu().numpy()
+            ai_probability = float(probs[0] * 100.0)  # Class 0 is AI probability
+            certainty = float(probs[label_id] * 100.0)  # Confidence in predicted class
+        else:
+            # Fallback if probabilities not available
+            is_ai = label.lower() == "ai"
+            ai_probability = 100.0 if is_ai else 0.0
+            certainty = 100.0
+        
+        return DetectionResultDTO(
+            label=label,
+            ai_probability=ai_probability,
+            certainty=certainty,
+            ai_spans=[],
+            model_used="gigacheck",
+        )
+
+
+class DetectionService:
+    """AI text detection service using RuBERT and GigaCheck."""
+
+    def __init__(self, rubert: RuBertService, gigacheck: GigaCheckService) -> None:
+        self._rubert = rubert
+        self._gigacheck = gigacheck
+
+    async def load(self) -> None:
+        """Load both models concurrently."""
+        await asyncio.gather(self._rubert.load(), self._gigacheck.load())
+        logger.info("models_loaded_successfully")
+
+    async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
+        """Run inference with RuBERT."""
         return await self._rubert.detect(dto)
+
+    async def detect_gigacheck(self, dto: DetectionInputDTO) -> DetectionResultDTO:
+        """Run inference with GigaCheck."""
+        return await self._gigacheck.detect(dto)
