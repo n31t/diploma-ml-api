@@ -6,7 +6,7 @@ This module provides all service dependencies.
 
 from dishka import Provider, Scope, provide
 
-from src.services.detection_service import DetectionService, RuBertService
+from src.services.detection_service import DetectionService, GigaCheckService, RuBertService
 
 
 class ServiceProvider(Provider):
@@ -21,8 +21,13 @@ class ServiceProvider(Provider):
         return RuBertService()
 
     @provide(scope=Scope.APP)
+    def provide_gigacheck_service(self) -> GigaCheckService:
+        return GigaCheckService()
+
+    @provide(scope=Scope.APP)
     def provide_detection_service(
         self,
         rubert: RuBertService,
+        gigacheck: GigaCheckService,
     ) -> DetectionService:
-        return DetectionService(rubert)
+        return DetectionService(rubert, gigacheck)
