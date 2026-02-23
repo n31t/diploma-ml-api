@@ -14,7 +14,7 @@ from src.utils.text_chunker import split_text_into_chunks
 logger = get_logger(__name__)
 
 _RUBERT_BASE_MODEL = "DeepPavlov/rubert-base-cased"
-_RUBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "rubert-base-ainl-peft" / "checkpoint-6000")
+_RUBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "rubert-base-ainl-peft" / "checkpoint-7000")
 _RUBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _GIGACHECK_MODEL = "iitolstykh/GigaCheck-Classifier-Multi"
