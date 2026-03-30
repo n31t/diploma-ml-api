@@ -18,7 +18,7 @@ async def detect_text(
     service: FromDishka[DetectionService],
 ) -> DetectionResponse:
     """Detect whether the provided text is human-written or AI-generated."""
-    input_dto = DetectionInputDTO(text=request.text)
+    input_dto = DetectionInputDTO(text=request.text, language=request.language)
     result = await service.detect(input_dto)
     return DetectionResponse(
         label=result.label,

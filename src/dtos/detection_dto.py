@@ -11,6 +11,7 @@ class AiSpanDTO:
 @dataclass
 class DetectionInputDTO:
     text: str
+    language: str = "ru"
 
 
 @dataclass
