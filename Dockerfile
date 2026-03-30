@@ -1,12 +1,19 @@
+# syntax=docker/dockerfile:1.7
+
 FROM python:3.13-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest
+
+COPY --from=${UV_IMAGE} /uv /uvx /bin/
 
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-cache --no-dev
+ENV UV_CACHE_DIR=/root/.cache/uv
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
 
 FROM python:3.13-slim AS runtime
