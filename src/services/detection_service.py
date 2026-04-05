@@ -18,7 +18,7 @@ _RUBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "rubert-base-ainl-peft" /
 _RUBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _KAZBERT_BASE_MODEL = "Eraly-ml/KazBERT"
-_KAZBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "kazbert-wikipedia-peft" / "checkpoint-1024")
+_KAZBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "kazbert-wikipedia-peft" / "checkpoint-1311")
 _KAZBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _GIGACHECK_MODEL = "iitolstykh/GigaCheck-Classifier-Multi"
