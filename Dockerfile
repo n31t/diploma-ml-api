@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.7
+FROM ${UV_IMAGE} AS uv_bin
+
 FROM python:3.13-slim AS builder
 
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest
-
-COPY --from=${UV_IMAGE} /uv /uvx /bin/
+COPY --from=uv_bin /uv /uvx /bin/
 
 WORKDIR /app
 
