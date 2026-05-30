@@ -1,5 +1,6 @@
 """AI text detection service using RuBERT and GigaCheck."""
 import asyncio
+from pathlib import Path
 
 import torch
 from peft import PeftModel
@@ -18,7 +19,9 @@ _RUBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "rubert-base-ainl-peft" /
 _RUBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _KAZBERT_BASE_MODEL = "Eraly-ml/KazBERT"
-_KAZBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "kazbert-wikipedia-peft" / "checkpoint-1116")
+# Standalone calibrated detector hosted on HF Hub (LoRA merged in, threshold=0.60 baked into the logit bias).
+# Set to a local path to a checkpoint dir instead to swap in another model — the loader auto-detects PEFT vs standalone.
+_KAZBERT_CHECKPOINT = "n31t/kazbert-ai-detector-t060"
 _KAZBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _GIGACHECK_MODEL = "iitolstykh/GigaCheck-Classifier-Multi"
@@ -30,6 +33,11 @@ def _get_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
     return "cpu"
+
+
+def _is_peft_checkpoint(checkpoint_path: str) -> bool:
+    """A checkpoint is a PEFT/LoRA adapter iff it ships an adapter_config.json."""
+    return (Path(checkpoint_path) / "adapter_config.json").exists()
 
 
 class RuBertService:
@@ -108,13 +116,20 @@ class KazBertService:
         self._model = None
 
     def _load_model_sync(self) -> None:
-        tokenizer = AutoTokenizer.from_pretrained(_KAZBERT_BASE_MODEL, cache_dir=config.hf_cache_dir)
-        base_model = AutoModelForSequenceClassification.from_pretrained(
-            _KAZBERT_BASE_MODEL,
-            num_labels=2,
-            cache_dir=config.hf_cache_dir
-        )
-        model = PeftModel.from_pretrained(base_model, _KAZBERT_CHECKPOINT)
+        if _is_peft_checkpoint(_KAZBERT_CHECKPOINT):
+            tokenizer = AutoTokenizer.from_pretrained(_KAZBERT_BASE_MODEL, cache_dir=config.hf_cache_dir)
+            base_model = AutoModelForSequenceClassification.from_pretrained(
+                _KAZBERT_BASE_MODEL,
+                num_labels=2,
+                cache_dir=config.hf_cache_dir,
+            )
+            model = PeftModel.from_pretrained(base_model, _KAZBERT_CHECKPOINT)
+            logger.info("kazbert_loaded_as_peft_adapter", checkpoint=_KAZBERT_CHECKPOINT)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(_KAZBERT_CHECKPOINT, cache_dir=config.hf_cache_dir)
+            model = AutoModelForSequenceClassification.from_pretrained(_KAZBERT_CHECKPOINT, cache_dir=config.hf_cache_dir)
+            logger.info("kazbert_loaded_as_standalone_model", checkpoint=_KAZBERT_CHECKPOINT)
+
         model.config.id2label = _KAZBERT_ID2LABEL
         model.config.label2id = {v: k for k, v in _KAZBERT_ID2LABEL.items()}
         model = model.to(self._device)

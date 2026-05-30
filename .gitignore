@@ -10,3 +10,7 @@ wheels/
 .venv
 .env
 jwt_imp.md
+
+# Standalone detector weights are hydrated from HF Hub at runtime (see detection_service.py).
+# Keep PEFT adapter checkpoints (small) tracked; exclude the multi-hundred-MB exported variants.
+src/models/kazbert-wikipedia-peft/exported-*/
