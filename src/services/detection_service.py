@@ -19,9 +19,15 @@ _RUBERT_CHECKPOINT = str(BASE_DIR / "src" / "models" / "rubert-base-ainl-peft" /
 _RUBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _KAZBERT_BASE_MODEL = "Eraly-ml/KazBERT"
-# Standalone calibrated detector hosted on HF Hub (LoRA merged in, threshold=0.60 baked into the logit bias).
-# Set to a local path to a checkpoint dir instead to swap in another model — the loader auto-detects PEFT vs standalone.
-_KAZBERT_CHECKPOINT = "n31t/kazbert-ai-detector-t060"
+# KazBERT ensemble: tuple of (checkpoint, weight). Weights are normalized at load time.
+# Each checkpoint is either an HF Hub repo id ("user/repo") or a local checkpoint dir.
+# Per-member format is auto-detected (PEFT adapter vs standalone) via _is_peft_checkpoint.
+# To swap a member: change its checkpoint. To disable ensembling: leave a single entry.
+# All members must share the KazBERT WordPiece vocab; the tokenizer of the first entry is reused for inference.
+_KAZBERT_CHECKPOINTS: tuple[tuple[str, float], ...] = (
+    ("n31t/kazbert-detector-fresh-v1", 0.3),
+    ("n31t/kazbert-detector-cumul-v1", 0.7),
+)
 _KAZBERT_ID2LABEL = {0: "HUMAN", 1: "AI"}
 
 _GIGACHECK_MODEL = "iitolstykh/GigaCheck-Classifier-Multi"
@@ -108,42 +114,64 @@ class RuBertService:
 
 
 class KazBertService:
-    """Fine-tuned KazBERT with LoRA for binary AI text classification (Kazakh)."""
+    """KazBERT ensemble for binary AI text classification (Kazakh). One member behaves identically to the single-model loader."""
 
     def __init__(self) -> None:
         self._device = _get_device()
         self._tokenizer = None
-        self._model = None
+        self._models: list = []
+        self._weights: list[float] = []
 
-    def _load_model_sync(self) -> None:
-        if _is_peft_checkpoint(_KAZBERT_CHECKPOINT):
+    def _load_member(self, checkpoint: str) -> tuple:
+        if _is_peft_checkpoint(checkpoint):
             tokenizer = AutoTokenizer.from_pretrained(_KAZBERT_BASE_MODEL, cache_dir=config.hf_cache_dir)
             base_model = AutoModelForSequenceClassification.from_pretrained(
                 _KAZBERT_BASE_MODEL,
                 num_labels=2,
                 cache_dir=config.hf_cache_dir,
             )
-            model = PeftModel.from_pretrained(base_model, _KAZBERT_CHECKPOINT)
-            logger.info("kazbert_loaded_as_peft_adapter", checkpoint=_KAZBERT_CHECKPOINT)
+            model = PeftModel.from_pretrained(base_model, checkpoint)
+            mode = "peft"
         else:
-            tokenizer = AutoTokenizer.from_pretrained(_KAZBERT_CHECKPOINT, cache_dir=config.hf_cache_dir)
-            model = AutoModelForSequenceClassification.from_pretrained(_KAZBERT_CHECKPOINT, cache_dir=config.hf_cache_dir)
-            logger.info("kazbert_loaded_as_standalone_model", checkpoint=_KAZBERT_CHECKPOINT)
+            tokenizer = AutoTokenizer.from_pretrained(checkpoint, cache_dir=config.hf_cache_dir)
+            model = AutoModelForSequenceClassification.from_pretrained(checkpoint, cache_dir=config.hf_cache_dir)
+            mode = "standalone"
 
         model.config.id2label = _KAZBERT_ID2LABEL
         model.config.label2id = {v: k for k, v in _KAZBERT_ID2LABEL.items()}
         model = model.to(self._device)
         model.eval()
-        self._tokenizer = tokenizer
-        self._model = model
+        return tokenizer, model, mode
+
+    def _load_model_sync(self) -> None:
+        if not _KAZBERT_CHECKPOINTS:
+            raise ValueError("_KAZBERT_CHECKPOINTS is empty")
+        total_weight = sum(w for _, w in _KAZBERT_CHECKPOINTS)
+        if total_weight <= 0:
+            raise ValueError("KazBERT ensemble weights must sum to > 0")
+
+        for i, (checkpoint, raw_weight) in enumerate(_KAZBERT_CHECKPOINTS):
+            tokenizer, model, mode = self._load_member(checkpoint)
+            self._models.append(model)
+            self._weights.append(raw_weight / total_weight)
+            if i == 0:
+                self._tokenizer = tokenizer
+            logger.info(
+                "kazbert_member_loaded",
+                index=i,
+                checkpoint=checkpoint,
+                mode=mode,
+                weight=self._weights[-1],
+            )
+        logger.info("kazbert_ensemble_ready", members=len(self._models))
 
     async def load(self) -> None:
-        """Load model in a thread pool so the event loop is not blocked."""
+        """Load every ensemble member in a thread pool so the event loop is not blocked."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._load_model_sync)
 
     async def detect_chunk(self, dto: DetectionInputDTO) -> DetectionResultDTO:
-        """Run inference on a single chunk and return its result."""
+        """Run each ensemble member on the chunk and return the weighted-averaged result."""
         inputs = self._tokenizer(
             dto.text,
             return_tensors="pt",
@@ -152,14 +180,17 @@ class KazBertService:
         )
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
+        probs_sum = None
         with torch.no_grad():
-            logits = self._model(**inputs).logits
+            for model, weight in zip(self._models, self._weights):
+                probs = torch.softmax(model(**inputs).logits, dim=-1)[0]
+                weighted = probs * weight
+                probs_sum = weighted if probs_sum is None else probs_sum + weighted
 
-        probs = torch.softmax(logits, dim=-1)[0]
-        predicted_id = logits.argmax().item()
+        predicted_id = int(probs_sum.argmax().item())
         label = _KAZBERT_ID2LABEL[predicted_id]
-        certainty = float(100.0 * probs[predicted_id])
-        ai_probability = float(100.0 * probs[1])
+        certainty = float(100.0 * probs_sum[predicted_id])
+        ai_probability = float(100.0 * probs_sum[1])
 
         return DetectionResultDTO(
             label=label,
@@ -172,7 +203,7 @@ class KazBertService:
     async def detect(self, dto: DetectionInputDTO) -> DetectionResultDTO:
         """Detect AI-generated text with chunking for long inputs."""
         chunks = split_text_into_chunks(dto.text)
-        logger.info("kazbert_chunking", total_chunks=len(chunks))
+        logger.info("kazbert_chunking", total_chunks=len(chunks), members=len(self._models))
 
         chunk_results = [
             await self.detect_chunk(DetectionInputDTO(text=chunk))
